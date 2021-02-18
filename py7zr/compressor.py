@@ -465,7 +465,7 @@ class LZMA1Decompressor(ISevenZipDecompressor):
         self._decompressor = lzma.LZMADecompressor(format=lzma.FORMAT_RAW, filters=filters)
         self.unpacksize = unpacksize
 
-    def decompress(self, data, max_length):
+    def decompress(self, data, max_length=-1):
         return self._decompressor.decompress(data, max_length)
 
 
@@ -538,14 +538,59 @@ class SevenZipDecompressor:
                         self.chain.append(self._get_alternative_decompressor(coders[i], unpacksizes[i], password))
         else:
             raise UnsupportedCompressionMethodError
+        #
+        if len(self.chain) == 2:
+            self._decompress = self._decompress2
+        elif len(self.chain) == 3:
+            self._decompress = self._decompress3
+        else:
+            self._decompress = self._decompress_primitive
 
-    def _decompress(self, data, max_length: int):
+    def _decompress2(self, data):
+        if self._unpacked[0] < self._unpacksizes[0]:
+            res0 = self.chain[0].decompress(data)
+            self._unpacked[0] += len(res0)
+        elif len(data) == 0:
+            res0 = b''
+        else:
+            raise EOFError
+        if self._unpacked[1] < self._unpacksizes[1]:
+            res = self.chain[1].decompress(res0)
+            self._unpacked[1] += len(res)
+        elif len(res0) == 0:
+            res = b''
+        else:
+            raise EOFError
+        return res
+
+    def _decompress3(self, data):
+        if self._unpacked[0] < self._unpacksizes[0]:
+            res0 = self.chain[0].decompress(data)
+            self._unpacked[0] += len(res0)
+        elif len(data) == 0:
+            res0 = b''
+        else:
+            raise EOFError
+        if self._unpacked[1] < self._unpacksizes[1]:
+            res1 = self.chain[1].decompress(res0)
+            self._unpacked[1] += len(res1)
+        elif len(res0) == 0:
+            res1 = b''
+        else:
+            raise EOFError
+        if self._unpacked[2] < self._unpacksizes[2]:
+            res = self.chain[2].decompress(res1)
+            self._unpacked[2] += len(res)
+        elif len(res1) == 0:
+            res = b''
+        else:
+            raise EOFError
+        return res
+
+    def _decompress_primitive(self, data):
         for i, decompressor in enumerate(self.chain):
             if self._unpacked[i] < self._unpacksizes[i]:
-                if isinstance(decompressor, LZMA1Decompressor):
-                    data = decompressor.decompress(data, max_length)  # always give max_length for lzma1
-                else:
-                    data = decompressor.decompress(data)
+                data = decompressor.decompress(data)
                 self._unpacked[i] += len(data)
             elif len(data) == 0:
                 data = b''
@@ -561,7 +606,7 @@ class SevenZipDecompressor:
         self.consumed += len(data)
         #
         if max_length < 0:
-            res = self._buf[self._pos:] + self._decompress(self._unused + data, max_length)
+            res = self._buf[self._pos:] + self._decompress(self._unused + data)
             self._buf = bytearray()
             self._unused = bytearray()
             self._pos = 0
@@ -573,10 +618,10 @@ class SevenZipDecompressor:
                 self._pos += max_length
             else:
                 if len(self._unused) > 0:
-                    tmp = self._decompress(self._unused + data, max_length)
+                    tmp = self._decompress(self._unused + data)
                     self._unused = bytearray()
                 else:
-                    tmp = self._decompress(data, max_length)
+                    tmp = self._decompress(data)
                 if current_buf_len + len(tmp) <= max_length:
                     res = self._buf[self._pos:] + tmp
                     self._buf = bytearray()
